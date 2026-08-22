@@ -1,0 +1,54 @@
+{
+  "keys": {
+    "Abyss": {
+      "limit_per_hour": null,
+      "limit_per_day": null,
+      "used": 0,
+      "expiry": null,
+      "usage": {
+        "hour": {},
+        "day": {}
+      }
+    },
+    "demo2": {
+      "limit_per_hour": null,
+      "limit_per_day": 500,
+      "used": 0,
+      "expiry": null,
+      "usage": {
+        "hour": {},
+        "day": {}
+      }
+    },
+    "@VoidShogunX9": {
+      "limit_per_hour": 100,
+      "limit_per_day": 1000,
+      "used": 0,
+      "expiry": 1787371800,
+      "usage": {
+        "hour": {},
+        "day": {}
+      }
+    },
+    "@CodeX_143": {
+      "limit_per_hour": null,
+      "limit_per_day": 300,
+      "used": 0,
+      "expiry": 6885888000,
+      "usage": {
+        "hour": {},
+        "day": {}
+      }
+    },
+    "0": {
+      "limit_per_hour": null,
+      "limit_per_day": 100,
+      "used": 0,
+      "expiry": 1787875200,
+      "usage": {
+        "hour": {},
+        "day": {}
+      }
+    }
+  }
+}

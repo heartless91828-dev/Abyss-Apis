@@ -1,0 +1,40 @@
+{
+  "apis": {
+    "telegram": [
+      "https://rootx-osint.in/?type=tg_num&key=axn_star&query={query}"
+    ],
+
+    "num": [
+      "https://rootx-osint.in/?type=num&key=@llx_oIl&query={query}"
+    ],
+
+    "vehicle": [
+      "https://vvvin-ng.vercel.app/lookup?rc={query}"
+    ],
+
+    "vnum": [
+      "https://rootx-osint.in/?type=v_num&key=E5ora&query={query}"
+    ],
+
+    "family": [
+      "https://rootx-osint.in/?type=aadhar_fam&key=E5ora&query={query}"
+
+    ],
+
+    "ip": [
+      "http://ip-api.com/json/{query}"
+    ],
+
+    "vinfo": [
+      "https://rootx-osint.in/?type=v_info&key=E5ora&query={query}"
+    ],
+
+    "ifsc": [
+      "https://dass-api.netlify.app/api/ifsc?code={query}"
+    ],
+
+    "link2qr": [
+      "https://dass-api.netlify.app/api/qr?size=300x300&data={query}"
+    ]
+  }
+}

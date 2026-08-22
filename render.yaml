@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: abyss-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 2 --threads 8 --worker-class gthread --timeout 30 --keep-alive 5 api:app
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: DATA_DIR
+        value: /var/data
+      # For persistent usage across Render restarts on Free/standard instances,
+      # set DATABASE_URL to a Render Postgres connection string.
