@@ -6,8 +6,15 @@ def v_num_extract_data(res):
     if not isinstance(data, dict):
         return None
 
+    # First try result, then fallback to root
+    result_data = ci_get(data, "result")
+
+    if not isinstance(result_data, dict):
+        result_data = data
+
     vehicle = ci_get(
-        data,
+        result_data,
+        "vnum",
         "vehicle",
         "veh",
         "vehicle_number",
@@ -17,7 +24,8 @@ def v_num_extract_data(res):
     )
 
     owner_number = ci_get(
-        data,
+        result_data,
+        "mobile_no",
         "mobile",
         "owner_number",
         "ownerNumber",
