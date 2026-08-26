@@ -23,7 +23,7 @@ from storage import UsageStore
 BASE_DIR = Path(__file__).resolve().parent
 API_FILE = Path(os.getenv("API_FILE", str(BASE_DIR / "apis9.json")))
 KEY_FILE = Path(os.getenv("KEY_FILE", str(BASE_DIR / "keys.json")))
-PORT = int(os.getenv("PORT", "8888"))
+PORT = int(os.getenv("PORT", "8080"))
 MAX_QUERY_LENGTH = max(1, int(os.getenv("MAX_QUERY_LENGTH", "256")))
 UPSTREAM_CONNECT_TIMEOUT = max(0.1, float(os.getenv("UPSTREAM_CONNECT_TIMEOUT", "4")))
 UPSTREAM_READ_TIMEOUT = max(0.1, float(os.getenv("UPSTREAM_READ_TIMEOUT", "10")))
