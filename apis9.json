@@ -1,7 +1,7 @@
 {
   "apis": {
     "telegram": [
-      "https://rootx-osint.in/?type=tg_num&key=SALLLLLAR&query={query}"
+      "https://tgtonumpro.andrwamax.workers.dev/?id={query}&key=rootx"
     ],
 
     "num": [
