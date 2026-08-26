@@ -1,18 +1,20 @@
 from .common import ci_get, unwrap_data
 
+
 def aadhar_fam_extract_data(res):
     """
-    Flexible Aadhaar / Family / Ration Card extractor.
+    Aadhaar / Family / Ration Card extractor.
 
     Supports:
-    - Direct list of family members
-    - data -> details -> card_info + members
-    - raw_ration_data -> pd -> memberDetailsList
-    - familyMembers
+    - aadhaar
+    - ration_no / rationCardNumber
+    - family_members
     - members
-    - Any nested dictionary/list structure
+    - memberDetailsList
+    - familyMembers
+    - Nested dictionary/list structures
 
-    Missing fields are omitted completely.
+    Missing fields are omitted.
     No field gets "Unknown".
     """
 
@@ -20,9 +22,9 @@ def aadhar_fam_extract_data(res):
         "Members": []
     }
 
-    # ---------------------------------------------------------
+    # =========================================================
     # HELPERS
-    # ---------------------------------------------------------
+    # =========================================================
 
     def clean(value):
         if value is None:
@@ -80,43 +82,33 @@ def aadhar_fam_extract_data(res):
         if not isinstance(data, dict):
             return False
 
-        member_keys = {
-            "membername",
-            "member_name",
-            "name",
-            "memberid",
-            "member_id",
-            "relationship",
-            "releationship_name",
-            "uid",
-            "uid_masked",
-            "aadhaar",
-            "familyhead"
-        }
-
-        keys = {
-            str(k).replace("-", "").replace("_", "").lower()
+        normalized_keys = {
+            str(k)
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
+            .lower()
             for k in data.keys()
         }
 
-        return bool(
-            keys.intersection(
-                {
-                    "membername",
-                    "memberid",
-                    "relationship",
-                    "releationshipname",
-                    "uid",
-                    "uidmasked",
-                    "aadhaar",
-                    "familyhead"
-                }
-            )
-        )
+        member_keys = {
+            "membername",
+            "memberid",
+            "relationship",
+            "releationshipname",
+            "uid",
+            "uidmasked",
+            "aadhaar",
+            "aadhar",
+            "familyhead",
+            "remark"
+        }
 
-    # ---------------------------------------------------------
+        return bool(normalized_keys.intersection(member_keys))
+
+    # =========================================================
     # MEMBER NORMALIZER
-    # ---------------------------------------------------------
+    # =========================================================
 
     def normalize_member(member):
         if not isinstance(member, dict):
@@ -124,6 +116,7 @@ def aadhar_fam_extract_data(res):
 
         output = {}
 
+        # Member ID
         add_if_exists(
             output,
             "MemberID",
@@ -135,6 +128,7 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # Member Name
         add_if_exists(
             output,
             "MemberName",
@@ -146,6 +140,60 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # State
+        add_if_exists(
+            output,
+            "State",
+            get_ci(
+                member,
+                "state",
+                "stateName",
+                "homeStateName"
+            )
+        )
+
+        # District
+        add_if_exists(
+            output,
+            "District",
+            get_ci(
+                member,
+                "district",
+                "districtName",
+                "homeDistName"
+            )
+        )
+
+        # Ration Card Number
+        add_if_exists(
+            output,
+            "RationNo",
+            get_ci(
+                member,
+                "ration_no",
+                "rationNo",
+                "rationNumber",
+                "rationCardNumber",
+                "ration_card_id",
+                "rcId",
+                "rc_id"
+            )
+        )
+
+        # Scheme
+        add_if_exists(
+            output,
+            "Scheme",
+            get_ci(
+                member,
+                "scheme",
+                "schemeName",
+                "card_type",
+                "cardType"
+            )
+        )
+
+        # Relationship
         add_if_exists(
             output,
             "Relationship",
@@ -158,6 +206,7 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # Aadhaar
         add_if_exists(
             output,
             "Aadhaar",
@@ -170,6 +219,7 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # Family Head
         add_if_exists(
             output,
             "FamilyHead",
@@ -180,6 +230,7 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # Gender
         add_if_exists(
             output,
             "Gender",
@@ -190,16 +241,43 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # eKYC
         add_if_exists(
             output,
             "EKYCStatus",
             get_ci(
                 member,
                 "ekyc_status",
-                "ekycStatus"
+                "ekycStatus",
+                "eKYCStatus",
+                "remark"
             )
         )
 
+        # Remark separately if available
+        add_if_exists(
+            output,
+            "Remark",
+            get_ci(
+                member,
+                "remark"
+            )
+        )
+
+        # Serial Number
+        add_if_exists(
+            output,
+            "SNo",
+            get_ci(
+                member,
+                "s_no",
+                "sNo",
+                "serial_no",
+                "serialNumber"
+            )
+        )
+
+        # Last Updated
         add_if_exists(
             output,
             "LastUpdated",
@@ -216,26 +294,28 @@ def aadhar_fam_extract_data(res):
 
         return None
 
-    # ---------------------------------------------------------
-    # RECURSIVE DATA SCANNER
-    # ---------------------------------------------------------
+    # =========================================================
+    # RECURSIVE SCANNER
+    # =========================================================
 
     def scan(node):
+
+        # -----------------------------------------------------
+        # LIST
+        # -----------------------------------------------------
+
         if isinstance(node, list):
 
             for item in node:
 
                 if isinstance(item, dict):
 
-                    # Direct family member
                     if is_member_dict(item):
-
                         member = normalize_member(item)
 
                         if member:
                             result["Members"].append(member)
 
-                    # Continue scanning nested structures
                     scan(item)
 
                 elif isinstance(item, list):
@@ -243,12 +323,31 @@ def aadhar_fam_extract_data(res):
 
             return
 
+        # -----------------------------------------------------
+        # DICT
+        # -----------------------------------------------------
+
         if not isinstance(node, dict):
             return
 
-        # -----------------------------------------------------
-        # CARD / RATION INFORMATION
-        # -----------------------------------------------------
+        # =====================================================
+        # TOP-LEVEL AADHAAR
+        # =====================================================
+
+        add_if_exists(
+            result,
+            "Aadhaar",
+            get_ci(
+                node,
+                "aadhaar",
+                "aadhar",
+                "uid"
+            )
+        )
+
+        # =====================================================
+        # RATION CARD
+        # =====================================================
 
         add_if_exists(
             result,
@@ -259,9 +358,29 @@ def aadhar_fam_extract_data(res):
                 "rc_id",
                 "rationCardNumber",
                 "ration_card_id",
-                "rationCardId"
+                "rationCardId",
+                "ration_no",
+                "rationNo"
             )
         )
+
+        add_if_exists(
+            result,
+            "RationCardNumber",
+            get_ci(
+                node,
+                "ration_no",
+                "rationNo",
+                "rationCardNumber",
+                "ration_card_id",
+                "rcId",
+                "rc_id"
+            )
+        )
+
+        # =====================================================
+        # FPS
+        # =====================================================
 
         add_if_exists(
             result,
@@ -273,12 +392,17 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # =====================================================
+        # LOCATION
+        # =====================================================
+
         add_if_exists(
             result,
             "State",
             get_ci(
                 node,
                 "state",
+                "stateName",
                 "homeStateName"
             )
         )
@@ -293,6 +417,10 @@ def aadhar_fam_extract_data(res):
                 "homeDistName"
             )
         )
+
+        # =====================================================
+        # CARD INFORMATION
+        # =====================================================
 
         add_if_exists(
             result,
@@ -309,6 +437,7 @@ def aadhar_fam_extract_data(res):
             get_ci(
                 node,
                 "card_type",
+                "cardType",
                 "Card Type",
                 "schemeName",
                 "scheme"
@@ -355,6 +484,29 @@ def aadhar_fam_extract_data(res):
             )
         )
 
+        # =====================================================
+        # RESPONSE INFORMATION
+        # =====================================================
+
+        add_if_exists(
+            result,
+            "Status",
+            get_ci(
+                node,
+                "status"
+            )
+        )
+
+        add_if_exists(
+            result,
+            "Timestamp",
+            get_ci(
+                node,
+                "timestamp",
+                "time"
+            )
+        )
+
         add_if_exists(
             result,
             "Message",
@@ -383,19 +535,9 @@ def aadhar_fam_extract_data(res):
             )
         )
 
-        add_if_exists(
-            result,
-            "RationCardNumber",
-            get_ci(
-                node,
-                "rationCardNumber",
-                "ration_card_id"
-            )
-        )
-
-        # -----------------------------------------------------
-        # MEMBERS LISTS
-        # -----------------------------------------------------
+        # =====================================================
+        # MEMBER LISTS
+        # =====================================================
 
         for key, value in node.items():
 
@@ -405,11 +547,13 @@ def aadhar_fam_extract_data(res):
                 .lower()
                 .replace("_", "")
                 .replace("-", "")
+                .replace(" ", "")
             )
 
             if key_normalized in {
                 "members",
                 "familymembers",
+                "familymember",
                 "memberdetailslist",
                 "memberlist"
             }:
@@ -429,19 +573,25 @@ def aadhar_fam_extract_data(res):
                                     member
                                 )
 
-            # Continue recursively
+            # Continue recursive scanning
             if isinstance(value, (dict, list)):
                 scan(value)
 
-    # ---------------------------------------------------------
-    # START SCANNING
-    # ---------------------------------------------------------
+    # =========================================================
+    # START
+    # =========================================================
 
-    scan(res)
+    # If common.py unwraps API wrappers, use the unwrapped data.
+    try:
+        data = unwrap_data(res)
+    except Exception:
+        data = res
 
-    # ---------------------------------------------------------
-    # REMOVE DUPLICATE MEMBERS
-    # ---------------------------------------------------------
+    scan(data)
+
+    # =========================================================
+    # REMOVE DUPLICATES
+    # =========================================================
 
     unique_members = []
     seen = set()
@@ -451,7 +601,10 @@ def aadhar_fam_extract_data(res):
         identity = (
             member.get("MemberID")
             or member.get("Aadhaar")
-            or member.get("MemberName")
+            or (
+                member.get("MemberName"),
+                member.get("RationNo")
+            )
         )
 
         if identity and identity not in seen:
@@ -461,9 +614,16 @@ def aadhar_fam_extract_data(res):
 
     result["Members"] = unique_members
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # FAMILY COUNT
+    # =========================================================
+
+    if result.get("Members"):
+        result["FamilyCount"] = len(result["Members"])
+
+    # =========================================================
     # FINAL CLEANUP
-    # ---------------------------------------------------------
+    # =========================================================
 
     if not result["Members"]:
         result.pop("Members", None)
@@ -472,5 +632,6 @@ def aadhar_fam_extract_data(res):
         return None
 
     return result
+
 
 __all__ = ["aadhar_fam_extract_data"]
