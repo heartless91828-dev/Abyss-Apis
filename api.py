@@ -13,58 +13,110 @@ import requests
 from flask import Flask, Response, jsonify, request
 
 from extractors import EXTRACTORS
-from storage import UsageStore, ist_now
+from storage import UsageStore
+
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
 API_FILE = Path(os.getenv("API_FILE", str(BASE_DIR / "apis9.json")))
 KEY_FILE = Path(os.getenv("KEY_FILE", str(BASE_DIR / "keys.json")))
 PORT = int(os.getenv("PORT", "8888"))
-MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "256"))
-UPSTREAM_CONNECT_TIMEOUT = float(os.getenv("UPSTREAM_CONNECT_TIMEOUT", "4"))
-UPSTREAM_READ_TIMEOUT = float(os.getenv("UPSTREAM_READ_TIMEOUT", "10"))
-MAX_UPSTREAM_WORKERS = int(os.getenv("MAX_UPSTREAM_WORKERS", "16"))
+MAX_QUERY_LENGTH = max(1, int(os.getenv("MAX_QUERY_LENGTH", "256")))
+UPSTREAM_CONNECT_TIMEOUT = max(0.1, float(os.getenv("UPSTREAM_CONNECT_TIMEOUT", "4")))
+UPSTREAM_READ_TIMEOUT = max(0.1, float(os.getenv("UPSTREAM_READ_TIMEOUT", "10")))
+MAX_UPSTREAM_WORKERS = max(1, int(os.getenv("MAX_UPSTREAM_WORKERS", "16")))
 IST = ZoneInfo("Asia/Kolkata")
+
+# link2qr returns an image, so it does not need an extractor.
+SPECIAL_TYPES = {"link2qr"}
+
+
+# -----------------------------------------------------------------------------
+# App / shared state
+# -----------------------------------------------------------------------------
 
 app = Flask(__name__)
 app.json.sort_keys = False
 
 _config_lock = threading.RLock()
 _usage_store = UsageStore()
-_search_executor = ThreadPoolExecutor(max_workers=MAX_UPSTREAM_WORKERS, thread_name_prefix="upstream")
+_search_executor = ThreadPoolExecutor(
+    max_workers=MAX_UPSTREAM_WORKERS,
+    thread_name_prefix="upstream",
+)
 _local = threading.local()
 
+
+# -----------------------------------------------------------------------------
+# Time helpers
+# -----------------------------------------------------------------------------
 
 def now_ist() -> datetime:
     return datetime.now(IST)
 
 
+# -----------------------------------------------------------------------------
+# JSON / configuration helpers
+# -----------------------------------------------------------------------------
+
 def load_json(path: Path, default):
     try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        with path.open("r", encoding="utf-8") as file:
+            return json.load(file)
     except (OSError, ValueError, TypeError) as exc:
         app.logger.warning("Failed to read %s: %s", path, exc)
         return default
 
 
 def load_apis(api_type: str | None = None):
-    data = load_json(API_FILE, {"apis": {}}).get("apis", {})
+    """Load upstream URLs for one type from apis9.json."""
+    with _config_lock:
+        payload = load_json(API_FILE, {"apis": {}})
+
+    if not isinstance(payload, dict):
+        return []
+
+    data = payload.get("apis", {})
+
     if isinstance(data, list):
-        return data
-    if api_type:
-        urls = data.get(api_type.lower(), [])
-        return urls if isinstance(urls, list) else []
-    return []
+        # Backward compatibility for an old flat list config.
+        return [item for item in data if isinstance(item, str) and item.strip()]
+
+    if not isinstance(data, dict) or not api_type:
+        return []
+
+    urls = data.get(api_type.lower(), [])
+    if not isinstance(urls, list):
+        return []
+
+    return [
+        item.strip()
+        for item in urls
+        if isinstance(item, str) and item.strip()
+    ]
 
 
 def load_key_config(key: str):
-    keys = load_json(KEY_FILE, {"keys": {}}).get("keys", {})
-    return keys.get(key)
+    with _config_lock:
+        payload = load_json(KEY_FILE, {"keys": {}})
+
+    if not isinstance(payload, dict):
+        return None
+
+    keys = payload.get("keys", {})
+    if not isinstance(keys, dict):
+        return None
+
+    config = keys.get(key)
+    return config if isinstance(config, dict) else None
 
 
 def key_is_valid(key: str):
     config = load_key_config(key)
-    if not isinstance(config, dict):
+    if config is None:
         return False, "Invalid Key", None
 
     expiry = config.get("expiry")
@@ -78,111 +130,343 @@ def key_is_valid(key: str):
     return True, "OK", config
 
 
-def get_session():
+# -----------------------------------------------------------------------------
+# HTTP session helper
+# -----------------------------------------------------------------------------
+
+def get_session() -> requests.Session:
+    """Create one keep-alive session per worker thread."""
     session = getattr(_local, "session", None)
+
     if session is None:
         session = requests.Session()
-        session.headers.update({
-            "User-Agent": "AbyssAPI/2.0",
-            "Accept": "application/json,image/*;q=0.8,*/*;q=0.5",
-            "Connection": "keep-alive",
-        })
+        session.headers.update(
+            {
+                "User-Agent": "AbyssAPI/2.1",
+                "Accept": "application/json, text/json, text/plain, image/*;q=0.8, */*;q=0.5",
+                "Connection": "keep-alive",
+            }
+        )
         _local.session = session
+
     return session
 
 
+# -----------------------------------------------------------------------------
+# Extractor helpers
+# -----------------------------------------------------------------------------
+
 def extract_data(data, api_type: str):
+    """Run the extractor registered for the requested API type."""
     extractor = EXTRACTORS.get(api_type.lower())
     if extractor is None:
         return None
     return extractor(data)
 
 
-def call_api(api_url: str, query: str, api_type: str):
+def parse_upstream_json(response: requests.Response):
+    """
+    Parse JSON robustly.
+
+    Some upstreams send valid JSON while declaring a non-JSON content type.
+    response.json() can reject those; json.loads(response.text) handles them.
+    """
     try:
-        encoded_query = quote(str(query), safe="")
-        url = api_url.replace("{query}", encoded_query)
+        return response.json()
+    except (ValueError, requests.exceptions.JSONDecodeError):
+        pass
+
+    text = response.text.lstrip("\ufeff").strip()
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+# -----------------------------------------------------------------------------
+# Upstream request
+# -----------------------------------------------------------------------------
+
+def call_api(api_url: str, query: str, api_type: str):
+    """
+    Call one upstream and normalize the outcome.
+
+    This function is intentionally type-generic. Every normal data type is
+    passed through its registered extractor; link2qr is the only image special
+    case.
+    """
+    api_type = api_type.lower()
+    encoded_query = quote(str(query), safe="")
+    url = api_url.replace("{query}", encoded_query)
+
+    try:
         response = get_session().get(
             url,
             timeout=(UPSTREAM_CONNECT_TIMEOUT, UPSTREAM_READ_TIMEOUT),
+            allow_redirects=True,
         )
-        if response.status_code < 200 or response.status_code >= 300:
-            return None
 
-        if api_type == "link2qr":
+        status = response.status_code
+        content_type = response.headers.get("Content-Type", "")
+
+        app.logger.info(
+            "UPSTREAM type=%s status=%s content_type=%s url=%s",
+            api_type,
+            status,
+            content_type,
+            url,
+        )
+
+        if not 200 <= status < 300:
+            app.logger.warning(
+                "UPSTREAM FAILED type=%s status=%s url=%s",
+                api_type,
+                status,
+                url,
+            )
+            return {
+                "found": False,
+                "upstream_error": True,
+                "status_code": status,
+                "message": f"Upstream returned HTTP {status}",
+            }
+
+        # ------------------------------------------------------------------
+        # Image response type
+        # ------------------------------------------------------------------
+        if api_type in SPECIAL_TYPES:
             content = response.content
-            if content:
+            if not content:
                 return {
-                    "found": True,
-                    "image": content,
-                    "content_type": response.headers.get("Content-Type", "image/png"),
+                    "found": False,
+                    "upstream_error": True,
+                    "status_code": status,
+                    "message": "Upstream returned an empty image",
                 }
-            return None
+
+            return {
+                "found": True,
+                "image": content,
+                "content_type": content_type or "image/png",
+            }
+
+        # ------------------------------------------------------------------
+        # Normal JSON response types
+        # ------------------------------------------------------------------
+        payload = parse_upstream_json(response)
+
+        if payload is None:
+            body_preview = response.text[:300].replace("\n", " ").replace("\r", " ")
+            app.logger.warning(
+                "UPSTREAM NON-JSON type=%s content_type=%s body=%r",
+                api_type,
+                content_type,
+                body_preview,
+            )
+            return {
+                "found": False,
+                "upstream_error": True,
+                "status_code": status,
+                "message": "Upstream returned a non-JSON response",
+            }
 
         try:
-            payload = response.json()
-        except ValueError:
-            return None
+            parsed = extract_data(payload, api_type)
+        except Exception:
+            app.logger.exception(
+                "EXTRACTOR ERROR type=%s url=%s",
+                api_type,
+                url,
+            )
+            return {
+                "found": False,
+                "extract_error": True,
+                "message": f"Extractor error for type: {api_type}",
+            }
 
-        parsed = extract_data(payload, api_type)
         if parsed:
-            return {"found": True, "data": parsed}
-    except requests.RequestException as exc:
-        app.logger.debug("Upstream request failed: %s", exc)
-    except Exception:
-        app.logger.exception("Unexpected upstream/parser error")
-    return None
+            return {
+                "found": True,
+                "data": parsed,
+            }
 
+        app.logger.warning(
+            "EXTRACTOR EMPTY type=%s payload_type=%s",
+            api_type,
+            type(payload).__name__,
+        )
+        return {
+            "found": False,
+            "extract_error": True,
+            "message": f"Could not parse {api_type} response",
+        }
+
+    except requests.Timeout as exc:
+        app.logger.warning(
+            "UPSTREAM TIMEOUT type=%s url=%s error=%s",
+            api_type,
+            url,
+            exc,
+        )
+        return {
+            "found": False,
+            "upstream_error": True,
+            "message": "Upstream request timed out",
+        }
+
+    except requests.RequestException as exc:
+        app.logger.warning(
+            "UPSTREAM REQUEST ERROR type=%s url=%s error=%s",
+            api_type,
+            url,
+            exc,
+        )
+        return {
+            "found": False,
+            "upstream_error": True,
+            "message": "Upstream request failed",
+        }
+
+    except Exception:
+        app.logger.exception(
+            "UNEXPECTED UPSTREAM ERROR type=%s url=%s",
+            api_type,
+            url,
+        )
+        return {
+            "found": False,
+            "upstream_error": True,
+            "message": "Unexpected upstream error",
+        }
+
+
+# -----------------------------------------------------------------------------
+# Search / fan-out
+# -----------------------------------------------------------------------------
 
 def search(query: str, api_type: str):
+    """
+    Search all configured upstreams for a type.
+
+    - One upstream: no unnecessary thread hop.
+    - Multiple upstreams: race them concurrently and return the first success.
+    - If every upstream fails, preserve a useful diagnostic instead of turning
+      every problem into a misleading 'No Data Found'.
+    """
     api_type = api_type.lower()
     apis = load_apis(api_type)
+
     if not apis:
-        return {"found": False, "error": f"No APIs found for type: {api_type}"}
+        return {
+            "found": False,
+            "config_error": True,
+            "error": f"No APIs found for type: {api_type}",
+        }
 
-    # Avoid a thread hop when there is only one upstream.
     if len(apis) == 1:
-        return call_api(apis[0], query, api_type) or {"found": False}
+        return call_api(apis[0], query, api_type)
 
-    futures = {_search_executor.submit(call_api, url, query, api_type) for url in apis}
+    futures = {
+        _search_executor.submit(call_api, url, query, api_type)
+        for url in apis
+    }
     pending = set(futures)
+    failures = []
+
     try:
         while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            done, pending = wait(
+                pending,
+                return_when=FIRST_COMPLETED,
+            )
+
             for future in done:
                 try:
                     result = future.result()
-                except Exception:
+                except Exception as exc:
                     app.logger.exception("Upstream future failed")
+                    failures.append(
+                        {
+                            "found": False,
+                            "upstream_error": True,
+                            "message": str(exc),
+                        }
+                    )
                     continue
+
                 if result and result.get("found"):
                     for other in pending:
                         other.cancel()
                     return result
+
+                if result:
+                    failures.append(result)
+
     finally:
-        # Queued work is cancelled; already-running network calls finish under their own timeout.
+        # Queued tasks are cancelled; requests already running will finish
+        # within their own configured timeout.
         for future in pending:
             future.cancel()
+
+    # Prefer a meaningful configuration error, then an upstream error, then
+    # an extractor error, rather than falling back to a misleading success.
+    for item in failures:
+        if item.get("config_error"):
+            return item
+
+    for item in failures:
+        if item.get("upstream_error"):
+            return item
+
+    for item in failures:
+        if item.get("extract_error"):
+            return item
+
     return {"found": False}
 
 
+# -----------------------------------------------------------------------------
+# Common response helpers
+# -----------------------------------------------------------------------------
+
+def base_result(spell: str, used_count: int):
+    return {
+        "Spell": spell,
+        "Used_count": used_count,
+        "Server_Time_IST": now_ist().isoformat(),
+        "DM FOR BUY": "@llx_oIl",
+        "Developer": "@BotFatherPrime",
+    }
+
+
+# -----------------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------------
+
 @app.get("/")
 def home():
-    return jsonify({
-        "success": True,
-        "message": "API is alive",
-        "server_time_ist": now_ist().isoformat(),
-        "timezone": "Asia/Kolkata",
-    })
+    return jsonify(
+        {
+            "success": True,
+            "message": "API is alive",
+            "server_time_ist": now_ist().isoformat(),
+            "timezone": "Asia/Kolkata",
+        }
+    )
 
 
 @app.get("/health")
 def health():
-    return jsonify({
-        "success": True,
-        "status": "healthy",
-        "server_time_ist": now_ist().isoformat(),
-    })
+    return jsonify(
+        {
+            "success": True,
+            "status": "healthy",
+            "server_time_ist": now_ist().isoformat(),
+        }
+    )
 
 
 @app.get("/api")
@@ -192,71 +476,190 @@ def api():
     spell = (request.args.get("spell") or "").strip()
 
     if not api_type or not key or not spell:
-        return jsonify({"success": False, "error": "Missing types, key or spell"}), 400
+        return jsonify(
+            {
+                "success": False,
+                "error": "Missing types, key or spell",
+            }
+        ), 400
+
     if len(spell) > MAX_QUERY_LENGTH:
-        return jsonify({"success": False, "error": "Query too long"}), 413
+        return jsonify(
+            {
+                "success": False,
+                "error": "Query too long",
+            }
+        ), 413
+
+    # Reject unsupported types before consuming usage.
+    if api_type not in EXTRACTORS and api_type not in SPECIAL_TYPES:
+        return jsonify(
+            {
+                "success": False,
+                "type": api_type,
+                "error": f"Unsupported API type: {api_type}",
+            }
+        ), 400
 
     ok, msg, key_config = key_is_valid(key)
     if not ok:
-        return jsonify({"success": False, "error": msg}), 403
+        return jsonify(
+            {
+                "success": False,
+                "error": msg,
+            }
+        ), 403
 
     admitted, msg, current_used = _usage_store.reserve(
         key,
         key_config.get("limit_per_hour"),
         key_config.get("limit_per_day"),
     )
+
     if not admitted:
-        return jsonify({"success": False, "error": msg, "Used_count": current_used}), 429
+        return jsonify(
+            {
+                "success": False,
+                "error": msg,
+                "Used_count": current_used,
+            }
+        ), 429
+
+    finished = False
 
     try:
         data = search(spell, api_type)
 
-        if api_type == "link2qr":
+        # ------------------------------------------------------------------
+        # QR image response
+        # ------------------------------------------------------------------
+        if api_type in SPECIAL_TYPES:
             if data.get("found") and data.get("image"):
-                _usage_store.finish(key, True)
-                return Response(data["image"], mimetype=data.get("content_type", "image/png"))
-            _usage_store.finish(key, False)
-            return jsonify({"success": False, "error": "QR Generation Failed"}), 502
+                used = _usage_store.finish(key, True)
+                finished = True
 
-        if data.get("error"):
-            _usage_store.finish(key, False)
-            return jsonify({"success": False, "error": data["error"]}), 502
+                # Flask accepts values like image/png; charset parameters are
+                # stripped so the mimetype remains valid.
+                mimetype = (data.get("content_type") or "image/png").split(";", 1)[0].strip()
+                return Response(data["image"], mimetype=mimetype)
 
-        if data.get("found"):
+            _usage_store.finish(key, False)
+            finished = True
+
+            if data.get("upstream_error"):
+                return jsonify(
+                    {
+                        "success": False,
+                        "type": api_type,
+                        "error": data.get("message", "QR upstream failed"),
+                        "upstream_status": data.get("status_code"),
+                    }
+                ), 502
+
+            return jsonify(
+                {
+                    "success": False,
+                    "type": api_type,
+                    "error": "QR Generation Failed",
+                }
+            ), 502
+
+        # ------------------------------------------------------------------
+        # Configuration / upstream / extractor diagnostics
+        # ------------------------------------------------------------------
+        if data.get("config_error") or data.get("error"):
+            _usage_store.finish(key, False)
+            finished = True
+            return jsonify(
+                {
+                    "success": False,
+                    "type": api_type,
+                    "error": data.get("error", "API configuration error"),
+                }
+            ), 502
+
+        if data.get("upstream_error"):
+            _usage_store.finish(key, False)
+            finished = True
+            return jsonify(
+                {
+                    "success": False,
+                    "type": api_type,
+                    "error": data.get("message", "Upstream request failed"),
+                    "upstream_status": data.get("status_code"),
+                }
+            ), 502
+
+        if data.get("extract_error"):
+            _usage_store.finish(key, False)
+            finished = True
+            return jsonify(
+                {
+                    "success": False,
+                    "type": api_type,
+                    "error": data.get("message", "Response parsing failed"),
+                }
+            ), 502
+
+        # ------------------------------------------------------------------
+        # Successful extracted data
+        # ------------------------------------------------------------------
+        if data.get("found") and isinstance(data.get("data"), dict):
             used = _usage_store.finish(key, True)
-            return jsonify({
+            finished = True
+
+            result = base_result(spell, used)
+            result.update(data["data"])
+
+            return jsonify(
+                {
+                    "success": True,
+                    "type": api_type,
+                    "result": result,
+                }
+            )
+
+        # ------------------------------------------------------------------
+        # Valid API call, no matching data found
+        # ------------------------------------------------------------------
+        used = _usage_store.finish(key, False)
+        finished = True
+
+        result = base_result(spell, used)
+        result["Msg"] = f"No Data Found Of {spell}"
+
+        return jsonify(
+            {
                 "success": True,
                 "type": api_type,
-                "result": {
-                    "Spell": spell,
-                    **data["data"],
-                    "Used_count": used,
-                    "Server_Time_IST": now_ist().isoformat(),
-                    "DM FOR BUY": "@llx_oIl",
-                    "Developer": "@BotFatherPrime",
-                },
-            })
+                "result": result,
+            }
+        )
 
-        _usage_store.finish(key, False)
-        return jsonify({
-            "success": True,
-            "type": api_type,
-            "result": {
-                "Spell": spell,
-                "Msg": f"No Data Found Of {spell}",
-                "Used_count": _usage_store.get_total(key),
-                "Server_Time_IST": now_ist().isoformat(),
-                "DM FOR BUY": "@llx_oIl",
-                "Developer": "@BotFatherPrime",
-            },
-        })
     except Exception:
-        # Make sure an admitted request never leaves an inflight slot stuck.
-        _usage_store.finish(key, False)
+        if not finished:
+            _usage_store.finish(key, False)
         app.logger.exception("Request handling failed")
-        return jsonify({"success": False, "error": "Internal server error"}), 500
+        return jsonify(
+            {
+                "success": False,
+                "type": api_type,
+                "error": "Internal server error",
+            }
+        ), 500
 
+
+# -----------------------------------------------------------------------------
+# Local development entry point
+# -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print(f"API STARTED ON PORT {PORT} | IST={now_ist().isoformat()}")
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+    print(
+        f"API STARTED ON PORT {PORT} | IST={now_ist().isoformat()}"
+    )
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False,
+        threaded=True,
+    )
