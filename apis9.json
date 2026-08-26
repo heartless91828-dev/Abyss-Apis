@@ -9,7 +9,7 @@
     ],
 
     "vehicle": [
-      "https://shiny-poetry-79c2.satyamrajsingh562.workers.dev/vehicle/info/{query}"
+      "http://api.subhxcosmo.in/api?key=suryansh&type=vehicle&term={query}"
     ],
 
     "vnum": [
@@ -26,7 +26,7 @@
     ],
 
     "vinfo": [
-      "https://shiny-poetry-79c2.satyamrajsingh562.workers.dev/vehicle/info/{query}"
+      "http://api.subhxcosmo.in/api?key=suryansh&type=vehicle&term={query}"
     ],
 
     "ifsc": [
