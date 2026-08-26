@@ -33,7 +33,11 @@ IST = ZoneInfo("Asia/Kolkata")
 # link2qr returns an image, so it does not need an extractor.
 SPECIAL_TYPES = {"link2qr"}
 
+import os
 
+family_key = os.getenv("FAMILY_API_KEY")
+
+url = url.replace("{FAMILY_API_KEY}", family_key)
 # -----------------------------------------------------------------------------
 # App / shared state
 # -----------------------------------------------------------------------------
