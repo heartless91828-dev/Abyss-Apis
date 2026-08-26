@@ -20,16 +20,6 @@
         "day": {}
       }
     },
-    "@Test2": {
-      "limit_per_hour": 100,
-      "limit_per_day": 1000,
-      "used": 0,
-      "expiry": 1787371800,
-      "usage": {
-        "hour": {},
-        "day": {}
-      }
-    },
     "@Test": {
       "limit_per_hour": null,
       "limit_per_day": 300,
