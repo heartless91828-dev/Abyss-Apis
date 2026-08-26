@@ -9,7 +9,7 @@
     ],
 
     "vehicle": [
-      "https://vvvin-ng.vercel.app/lookup?rc={query}"
+      "https://shiny-poetry-79c2.satyamrajsingh562.workers.dev/vehicle/info/{query}"
     ],
 
     "vnum": [
@@ -26,7 +26,7 @@
     ],
 
     "vinfo": [
-      "https://rootx-osint.in/?type=v_info&key=E5ora&query={query}"
+      "https://shiny-poetry-79c2.satyamrajsingh562.workers.dev/vehicle/info/{query}"
     ],
 
     "ifsc": [
