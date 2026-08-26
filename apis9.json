@@ -17,7 +17,7 @@
     ],
 
     "family": [
-      "https://rootx-osint.in/?type=aadhar_fam&key=E5ora&query={query}"
+      "https://api.unknownbatter.online/api/adh2ration-v1?key={FAMILY_API_KEY}&adh={query}"
 
     ],
 
