@@ -25,19 +25,21 @@ API_FILE = Path(os.getenv("API_FILE", str(BASE_DIR / "apis9.json")))
 KEY_FILE = Path(os.getenv("KEY_FILE", str(BASE_DIR / "keys.json")))
 PORT = int(os.getenv("PORT", "8080"))
 MAX_QUERY_LENGTH = max(1, int(os.getenv("MAX_QUERY_LENGTH", "256")))
-UPSTREAM_CONNECT_TIMEOUT = max(0.1, float(os.getenv("UPSTREAM_CONNECT_TIMEOUT", "4")))
-UPSTREAM_READ_TIMEOUT = max(0.1, float(os.getenv("UPSTREAM_READ_TIMEOUT", "10")))
-MAX_UPSTREAM_WORKERS = max(1, int(os.getenv("MAX_UPSTREAM_WORKERS", "16")))
+UPSTREAM_CONNECT_TIMEOUT = max(
+    0.1, float(os.getenv("UPSTREAM_CONNECT_TIMEOUT", "4"))
+)
+UPSTREAM_READ_TIMEOUT = max(
+    0.1, float(os.getenv("UPSTREAM_READ_TIMEOUT", "10"))
+)
+MAX_UPSTREAM_WORKERS = max(
+    1, int(os.getenv("MAX_UPSTREAM_WORKERS", "16"))
+)
 IST = ZoneInfo("Asia/Kolkata")
 
 # link2qr returns an image, so it does not need an extractor.
 SPECIAL_TYPES = {"link2qr"}
 
-import os
 
-family_key = os.getenv("FAMILY_API_KEY")
-
-url = url.replace("{FAMILY_API_KEY}", family_key)
 # -----------------------------------------------------------------------------
 # App / shared state
 # -----------------------------------------------------------------------------
@@ -47,10 +49,12 @@ app.json.sort_keys = False
 
 _config_lock = threading.RLock()
 _usage_store = UsageStore()
+
 _search_executor = ThreadPoolExecutor(
     max_workers=MAX_UPSTREAM_WORKERS,
     thread_name_prefix="upstream",
 )
+
 _local = threading.local()
 
 
@@ -87,12 +91,17 @@ def load_apis(api_type: str | None = None):
 
     if isinstance(data, list):
         # Backward compatibility for an old flat list config.
-        return [item for item in data if isinstance(item, str) and item.strip()]
+        return [
+            item
+            for item in data
+            if isinstance(item, str) and item.strip()
+        ]
 
     if not isinstance(data, dict) or not api_type:
         return []
 
     urls = data.get(api_type.lower(), [])
+
     if not isinstance(urls, list):
         return []
 
@@ -111,23 +120,28 @@ def load_key_config(key: str):
         return None
 
     keys = payload.get("keys", {})
+
     if not isinstance(keys, dict):
         return None
 
     config = keys.get(key)
+
     return config if isinstance(config, dict) else None
 
 
 def key_is_valid(key: str):
     config = load_key_config(key)
+
     if config is None:
         return False, "Invalid Key", None
 
     expiry = config.get("expiry")
+
     if expiry not in (None, ""):
         try:
             if datetime.now(timezone.utc).timestamp() > float(expiry):
                 return False, "Key Expired", None
+
         except (TypeError, ValueError):
             return False, "Invalid Key Expiry", None
 
@@ -144,13 +158,18 @@ def get_session() -> requests.Session:
 
     if session is None:
         session = requests.Session()
+
         session.headers.update(
             {
                 "User-Agent": "AbyssAPI/2.1",
-                "Accept": "application/json, text/json, text/plain, image/*;q=0.8, */*;q=0.5",
+                "Accept": (
+                    "application/json, text/json, text/plain, "
+                    "image/*;q=0.8, */*;q=0.5"
+                ),
                 "Connection": "keep-alive",
             }
         )
+
         _local.session = session
 
     return session
@@ -163,8 +182,10 @@ def get_session() -> requests.Session:
 def extract_data(data, api_type: str):
     """Run the extractor registered for the requested API type."""
     extractor = EXTRACTORS.get(api_type.lower())
+
     if extractor is None:
         return None
+
     return extractor(data)
 
 
@@ -177,17 +198,53 @@ def parse_upstream_json(response: requests.Response):
     """
     try:
         return response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
+
+    except (
+        ValueError,
+        requests.exceptions.JSONDecodeError,
+    ):
         pass
 
     text = response.text.lstrip("\ufeff").strip()
+
     if not text:
         return None
 
     try:
         return json.loads(text)
+
     except (TypeError, ValueError):
         return None
+
+
+# -----------------------------------------------------------------------------
+# Secret placeholder helper
+# -----------------------------------------------------------------------------
+
+def resolve_api_url(api_url: str, query: str) -> tuple[str | None, str | None]:
+    """
+    Resolve placeholders inside an upstream URL.
+
+    Supported placeholders:
+        {query}
+        {FAMILY_API_KEY}
+
+    Secrets are loaded from environment variables and are never stored
+    directly inside apis9.json.
+    """
+    encoded_query = quote(str(query), safe="")
+    url = api_url.replace("{query}", encoded_query)
+
+    # Family API secret
+    if "{FAMILY_API_KEY}" in url:
+        family_key = os.getenv("FAMILY_API_KEY", "").strip()
+
+        if not family_key:
+            return None, "FAMILY_API_KEY is not configured"
+
+        url = url.replace("{FAMILY_API_KEY}", family_key)
+
+    return url, None
 
 
 # -----------------------------------------------------------------------------
@@ -203,13 +260,37 @@ def call_api(api_url: str, query: str, api_type: str):
     case.
     """
     api_type = api_type.lower()
-    encoded_query = quote(str(query), safe="")
-    url = api_url.replace("{query}", encoded_query)
+
+    # Resolve query + environment-based secrets here.
+    url, config_error = resolve_api_url(api_url, query)
+
+    if config_error:
+        app.logger.error(
+            "API CONFIG ERROR type=%s error=%s",
+            api_type,
+            config_error,
+        )
+
+        return {
+            "found": False,
+            "config_error": True,
+            "message": config_error,
+        }
+
+    if not url:
+        return {
+            "found": False,
+            "config_error": True,
+            "message": "Could not build upstream URL",
+        }
 
     try:
         response = get_session().get(
             url,
-            timeout=(UPSTREAM_CONNECT_TIMEOUT, UPSTREAM_READ_TIMEOUT),
+            timeout=(
+                UPSTREAM_CONNECT_TIMEOUT,
+                UPSTREAM_READ_TIMEOUT,
+            ),
             allow_redirects=True,
         )
 
@@ -231,6 +312,7 @@ def call_api(api_url: str, query: str, api_type: str):
                 status,
                 url,
             )
+
             return {
                 "found": False,
                 "upstream_error": True,
@@ -241,8 +323,10 @@ def call_api(api_url: str, query: str, api_type: str):
         # ------------------------------------------------------------------
         # Image response type
         # ------------------------------------------------------------------
+
         if api_type in SPECIAL_TYPES:
             content = response.content
+
             if not content:
                 return {
                     "found": False,
@@ -260,16 +344,23 @@ def call_api(api_url: str, query: str, api_type: str):
         # ------------------------------------------------------------------
         # Normal JSON response types
         # ------------------------------------------------------------------
+
         payload = parse_upstream_json(response)
 
         if payload is None:
-            body_preview = response.text[:300].replace("\n", " ").replace("\r", " ")
+            body_preview = (
+                response.text[:300]
+                .replace("\n", " ")
+                .replace("\r", " ")
+            )
+
             app.logger.warning(
                 "UPSTREAM NON-JSON type=%s content_type=%s body=%r",
                 api_type,
                 content_type,
                 body_preview,
             )
+
             return {
                 "found": False,
                 "upstream_error": True,
@@ -279,12 +370,14 @@ def call_api(api_url: str, query: str, api_type: str):
 
         try:
             parsed = extract_data(payload, api_type)
+
         except Exception:
             app.logger.exception(
                 "EXTRACTOR ERROR type=%s url=%s",
                 api_type,
                 url,
             )
+
             return {
                 "found": False,
                 "extract_error": True,
@@ -302,6 +395,7 @@ def call_api(api_url: str, query: str, api_type: str):
             api_type,
             type(payload).__name__,
         )
+
         return {
             "found": False,
             "extract_error": True,
@@ -315,6 +409,7 @@ def call_api(api_url: str, query: str, api_type: str):
             url,
             exc,
         )
+
         return {
             "found": False,
             "upstream_error": True,
@@ -328,6 +423,7 @@ def call_api(api_url: str, query: str, api_type: str):
             url,
             exc,
         )
+
         return {
             "found": False,
             "upstream_error": True,
@@ -340,6 +436,7 @@ def call_api(api_url: str, query: str, api_type: str):
             api_type,
             url,
         )
+
         return {
             "found": False,
             "upstream_error": True,
@@ -374,9 +471,15 @@ def search(query: str, api_type: str):
         return call_api(apis[0], query, api_type)
 
     futures = {
-        _search_executor.submit(call_api, url, query, api_type)
+        _search_executor.submit(
+            call_api,
+            url,
+            query,
+            api_type,
+        )
         for url in apis
     }
+
     pending = set(futures)
     failures = []
 
@@ -390,8 +493,12 @@ def search(query: str, api_type: str):
             for future in done:
                 try:
                     result = future.result()
+
                 except Exception as exc:
-                    app.logger.exception("Upstream future failed")
+                    app.logger.exception(
+                        "Upstream future failed"
+                    )
+
                     failures.append(
                         {
                             "found": False,
@@ -399,11 +506,13 @@ def search(query: str, api_type: str):
                             "message": str(exc),
                         }
                     )
+
                     continue
 
                 if result and result.get("found"):
                     for other in pending:
                         other.cancel()
+
                     return result
 
                 if result:
@@ -415,16 +524,17 @@ def search(query: str, api_type: str):
         for future in pending:
             future.cancel()
 
-    # Prefer a meaningful configuration error, then an upstream error, then
-    # an extractor error, rather than falling back to a misleading success.
+    # Prefer a meaningful configuration error.
     for item in failures:
         if item.get("config_error"):
             return item
 
+    # Then an upstream error.
     for item in failures:
         if item.get("upstream_error"):
             return item
 
+    # Then an extractor error.
     for item in failures:
         if item.get("extract_error"):
             return item
@@ -475,9 +585,17 @@ def health():
 
 @app.get("/api")
 def api():
-    api_type = (request.args.get("types") or "").strip().lower()
-    key = (request.args.get("key") or "").strip()
-    spell = (request.args.get("spell") or "").strip()
+    api_type = (
+        request.args.get("types") or ""
+    ).strip().lower()
+
+    key = (
+        request.args.get("key") or ""
+    ).strip()
+
+    spell = (
+        request.args.get("spell") or ""
+    ).strip()
 
     if not api_type or not key or not spell:
         return jsonify(
@@ -496,7 +614,10 @@ def api():
         ), 413
 
     # Reject unsupported types before consuming usage.
-    if api_type not in EXTRACTORS and api_type not in SPECIAL_TYPES:
+    if (
+        api_type not in EXTRACTORS
+        and api_type not in SPECIAL_TYPES
+    ):
         return jsonify(
             {
                 "success": False,
@@ -506,6 +627,7 @@ def api():
         ), 400
 
     ok, msg, key_config = key_is_valid(key)
+
     if not ok:
         return jsonify(
             {
@@ -537,15 +659,20 @@ def api():
         # ------------------------------------------------------------------
         # QR image response
         # ------------------------------------------------------------------
+
         if api_type in SPECIAL_TYPES:
             if data.get("found") and data.get("image"):
                 used = _usage_store.finish(key, True)
                 finished = True
 
-                # Flask accepts values like image/png; charset parameters are
-                # stripped so the mimetype remains valid.
-                mimetype = (data.get("content_type") or "image/png").split(";", 1)[0].strip()
-                return Response(data["image"], mimetype=mimetype)
+                mimetype = (
+                    data.get("content_type") or "image/png"
+                ).split(";", 1)[0].strip()
+
+                return Response(
+                    data["image"],
+                    mimetype=mimetype,
+                )
 
             _usage_store.finish(key, False)
             finished = True
@@ -555,8 +682,13 @@ def api():
                     {
                         "success": False,
                         "type": api_type,
-                        "error": data.get("message", "QR upstream failed"),
-                        "upstream_status": data.get("status_code"),
+                        "error": data.get(
+                            "message",
+                            "QR upstream failed",
+                        ),
+                        "upstream_status": data.get(
+                            "status_code"
+                        ),
                     }
                 ), 502
 
@@ -569,46 +701,76 @@ def api():
             ), 502
 
         # ------------------------------------------------------------------
-        # Configuration / upstream / extractor diagnostics
+        # Configuration errors
         # ------------------------------------------------------------------
-        if data.get("config_error") or data.get("error"):
+
+        if data.get("config_error"):
             _usage_store.finish(key, False)
             finished = True
+
             return jsonify(
                 {
                     "success": False,
                     "type": api_type,
-                    "error": data.get("error", "API configuration error"),
+                    "error": data.get(
+                        "message",
+                        data.get(
+                            "error",
+                            "API configuration error",
+                        ),
+                    ),
                 }
             ), 502
+
+        # ------------------------------------------------------------------
+        # Upstream errors
+        # ------------------------------------------------------------------
 
         if data.get("upstream_error"):
             _usage_store.finish(key, False)
             finished = True
+
             return jsonify(
                 {
                     "success": False,
                     "type": api_type,
-                    "error": data.get("message", "Upstream request failed"),
-                    "upstream_status": data.get("status_code"),
+                    "error": data.get(
+                        "message",
+                        "Upstream request failed",
+                    ),
+                    "upstream_status": data.get(
+                        "status_code"
+                    ),
                 }
             ), 502
+
+        # ------------------------------------------------------------------
+        # Extractor errors
+        # ------------------------------------------------------------------
 
         if data.get("extract_error"):
             _usage_store.finish(key, False)
             finished = True
+
             return jsonify(
                 {
                     "success": False,
                     "type": api_type,
-                    "error": data.get("message", "Response parsing failed"),
+                    "error": data.get(
+                        "message",
+                        "Response parsing failed",
+                    ),
                 }
             ), 502
 
         # ------------------------------------------------------------------
         # Successful extracted data
         # ------------------------------------------------------------------
-        if data.get("found") and isinstance(data.get("data"), dict):
+
+        if (
+            data.get("found")
+            and isinstance(data.get("data"), dict)
+        ):
             used = _usage_store.finish(key, True)
             finished = True
 
@@ -626,6 +788,7 @@ def api():
         # ------------------------------------------------------------------
         # Valid API call, no matching data found
         # ------------------------------------------------------------------
+
         used = _usage_store.finish(key, False)
         finished = True
 
@@ -643,7 +806,11 @@ def api():
     except Exception:
         if not finished:
             _usage_store.finish(key, False)
-        app.logger.exception("Request handling failed")
+
+        app.logger.exception(
+            "Request handling failed"
+        )
+
         return jsonify(
             {
                 "success": False,
@@ -659,8 +826,10 @@ def api():
 
 if __name__ == "__main__":
     print(
-        f"API STARTED ON PORT {PORT} | IST={now_ist().isoformat()}"
+        f"API STARTED ON PORT {PORT} | "
+        f"IST={now_ist().isoformat()}"
     )
+
     app.run(
         host="0.0.0.0",
         port=PORT,
