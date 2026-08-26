@@ -9,7 +9,7 @@
     ],
 
     "vehicle": [
-      "http://api.subhxcosmo.in/api?key=suryansh&type=vehicle&term={query}"
+      "https://rc-chasis.drazeforce-io.workers.dev/fetch?key=elliotfuckedup&vehicle={query}"
     ],
 
     "vnum": [
