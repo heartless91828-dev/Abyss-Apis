@@ -13,7 +13,7 @@
     ],
 
     "vnum": [
-      "https://rootx-osint.in/?type=v_num&key=E5ora&query={query}"
+      "http://api.subhxcosmo.in/api?key=suryansh&type=vehicle_num&term={query}"
     ],
 
     "family": [
