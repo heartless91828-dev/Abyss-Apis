@@ -26,7 +26,7 @@
     ],
 
     "vinfo": [
-      "http://api.subhxcosmo.in/api?key=suryansh&type=vehicle&term={query}"
+      "https://web.justpolicy.in/php-vahaan/service.php/?action=VAHAAN_DETAILS&reg_number={query}%20&type=rc"
     ],
 
     "ifsc": [
