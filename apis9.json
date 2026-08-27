@@ -17,7 +17,7 @@
     ],
 
     "family": [
-      "https://api.unknownbatter.online/api/adh2ration-v1?key={FAMILY_API_KEY}&adh={query}"
+      "https://pole-containers-ribbon-functionality.trycloudflare.com/?aadhar={query}"
 
     ],
 
