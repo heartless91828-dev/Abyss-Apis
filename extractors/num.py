@@ -6,7 +6,7 @@ def num_extract_data(res):
     if not isinstance(data, dict):
         return None
 
-    mobile = ci_get(data, "mobile", "number", "phone")
+    mobile = ci_get(data, "mobile", "number", "num")
     circle = ci_get(data, "circle")
     name = ci_get(data, "name", "name")
     father_name = ci_get(data, "fname", "father", "fathername")
