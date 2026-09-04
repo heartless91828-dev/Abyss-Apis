@@ -220,18 +220,7 @@ def parse_upstream_json(response: requests.Response):
 # -----------------------------------------------------------------------------
 # Secret placeholder helper
 # -----------------------------------------------------------------------------
-
-def resolve_api_url(api_url: str, query: str) -> tuple[str | None, str | None]:
-    """
-    Resolve placeholders inside an upstream URL.
-
-    Supported placeholders:
-        {query}
-        {FAMILY_API_KEY}
-
-    Secrets are loaded from environment variables and are never stored
-    directly inside apis9.json.
-    """
+def resolve_api_url(api_url, query):
     encoded_query = quote(str(query), safe="")
     url = api_url.replace("{query}", encoded_query)
 
@@ -243,6 +232,15 @@ def resolve_api_url(api_url: str, query: str) -> tuple[str | None, str | None]:
             return None, "FAMILY_API_KEY is not configured"
 
         url = url.replace("{FAMILY_API_KEY}", family_key)
+
+    # VNUM API secret
+    if "{VNUM_API_KEY}" in url:
+        vnum_key = os.getenv("VNUM_API_KEY", "").strip()
+
+        if not vnum_key:
+            return None, "VNUM_API_KEY is not configured"
+
+        url = url.replace("{VNUM_API_KEY}", vnum_key)
 
     return url, None
 
