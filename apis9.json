@@ -13,7 +13,7 @@
     ],
 
     "vnum": [
-      "http://api.subhxcosmo.in/api?key=suryansh&type=vehicle_num&term={query}"
+      "https://api.unknownbatter.online/api/car?key={VNUM_API_KEY}&rc={query}"
     ],
 
     "family": [
