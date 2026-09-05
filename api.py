@@ -234,13 +234,13 @@ def resolve_api_url(api_url, query):
         url = url.replace("{FAMILY_API_KEY}", family_key)
 
     # VNUM API secret
-    if "{VNUM_API_KEY}" in url:
-        vnum_key = os.getenv("VNUM_API_KEY", "").strip()
+    if "{VNUM_KEY}" in url:
+        vnum_key = os.getenv("VNUM_KEY", "").strip()
 
         if not vnum_key:
-            return None, "VNUM_API_KEY is not configured"
+            return None, "VNUM_KEY is not configured"
 
-        url = url.replace("{VNUM_API_KEY}", vnum_key)
+        url = url.replace("{VNUM_KEY}", vnum_key)
 
     return url, None
 
