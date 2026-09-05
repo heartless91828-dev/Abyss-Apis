@@ -13,7 +13,7 @@
     ],
 
     "vnum": [
-      "https://api.unknownbatter.online/api/car?rc={query}&key={VNUM_API_KEY}"
+      "https://api.unknownbatter.online/api/car?rc={query}&key={VNUM_KEY}"
     ],
 
     "family": [
